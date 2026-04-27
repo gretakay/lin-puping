@@ -338,10 +338,11 @@
   let msgCleanupTimer = null;
 
   // GitHub Pages 模式：可從 query string 或 localStorage 設定 Apps Script API URL
+  const DEFAULT_GAS_API_URL = 'https://script.google.com/macros/s/AKfycby6UHgpsjzbPt0y-YJiP-olWf4XVwZvs-iIi3ECDvE0qMnDZ63i-P_oYdYYGDH1jEnsaA/exec';
   const queryParams = new URLSearchParams(window.location.search);
   const queryApiUrl = queryParams.get('apiUrl');
   if (queryApiUrl) localStorage.setItem('gas_api_url', queryApiUrl);
-  const GAS_API_URL = queryApiUrl || localStorage.getItem('gas_api_url') || '';
+  const GAS_API_URL = queryApiUrl || localStorage.getItem('gas_api_url') || DEFAULT_GAS_API_URL;
 
   function renderTopNav() {
     const topNav = document.getElementById('topNav');
