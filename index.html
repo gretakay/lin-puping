@@ -433,19 +433,73 @@
       });
     }
 
-    // POST 僅用於大型資料（例如圖片），採 no-cors fire-and-forget
+    // POST 僅用於大型資料（例如圖片）
+    // 先用 sendBeacon（跨網域更穩），失敗再退回隱藏 iframe form 提交
     const postUrl = new URL(GAS_API_URL);
     postUrl.searchParams.set('api', '1');
     postUrl.searchParams.set('action', action);
+    const bodyString = 'payload=' + encodeURIComponent(JSON.stringify(payload || {}));
 
-    const bodyParams = new URLSearchParams();
-    bodyParams.set('payload', JSON.stringify(payload || {}));
-    await fetch(postUrl.toString(), {
-      method: 'POST',
-      mode: 'no-cors',
-      body: bodyParams.toString()
+    if (navigator.sendBeacon) {
+      try {
+        const blob = new Blob([bodyString], { type: 'application/x-www-form-urlencoded;charset=UTF-8' });
+        const queued = navigator.sendBeacon(postUrl.toString(), blob);
+        if (queued) {
+          return { success: true, message: 'submitted' };
+        }
+      } catch (beaconErr) {
+        // ignore and fallback to iframe
+      }
+    }
+
+    // 退回隱藏 iframe form 提交
+    return new Promise((resolve, reject) => {
+      const frameName = '__gas_post_frame_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+      const iframe = document.createElement('iframe');
+      iframe.name = frameName;
+      iframe.style.display = 'none';
+
+      const formEl = document.createElement('form');
+      formEl.action = postUrl.toString();
+      formEl.method = 'POST';
+      formEl.target = frameName;
+      formEl.style.display = 'none';
+
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'payload';
+      input.value = JSON.stringify(payload || {});
+      formEl.appendChild(input);
+
+      let done = false;
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error('背景提交逾時'));
+      }, 30000);
+
+      function cleanup() {
+        clearTimeout(timer);
+        if (formEl.parentNode) formEl.parentNode.removeChild(formEl);
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+      }
+
+      iframe.onload = function() {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve({ success: true, message: 'submitted' });
+      };
+
+      document.body.appendChild(iframe);
+      document.body.appendChild(formEl);
+      formEl.submit();
     });
-    return { success: true, message: 'submitted' };
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   function setMsg(type, html, autoHideMs) {
@@ -729,7 +783,7 @@
 
         if (photoData) {
           try {
-            const photoRes = await callApi('updatePhotoInBackground', {
+            await callApi('updatePhotoInBackground', {
               row: res.row,
               base64Data: photoData,
               itemName: formData.itemName,
@@ -737,11 +791,25 @@
               locationName: formData.location
             }, 'POST');
 
-            if (photoRes && photoRes.success) {
+            let photoReady = false;
+            const startedAt = Date.now();
+            while (Date.now() - startedAt < 45000) {
+              await sleep(3000);
+              const statusRes = await callApi('getDonationPhotoStatus', { row: res.row }, 'GET');
+              const photoCell = String((statusRes && statusRes.photoUrl) || '').trim();
+              if (photoCell && photoCell.indexOf('無照片｜') === 0) {
+                throw new Error(photoCell.replace('無照片｜', ''));
+              }
+              if (photoCell && photoCell !== '無照片' && photoCell.indexOf('⏳') === -1) {
+                photoReady = true;
+                break;
+              }
+            }
+
+            if (photoReady) {
               setMsg('success', `✅ 入庫成功！(分類：${res.category}) 📷 圖片已就緒。`);
             } else {
-              const err = (photoRes && (photoRes.error || photoRes.message)) || '未知錯誤';
-              setMsg('success', `✅ 入庫成功！(分類：${res.category}) ⚠️ 圖片同步失敗：${err}`);
+              setMsg('success', `✅ 入庫成功！(分類：${res.category}) ⏳ 圖片仍在背景處理，請稍後到最近捐贈確認。`);
             }
           } catch (err) {
             setMsg('success', `✅ 入庫成功！(分類：${res.category}) ⚠️ 圖片背景同步失敗：${getErrMsg(err)}`);
