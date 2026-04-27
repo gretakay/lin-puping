@@ -379,36 +379,73 @@
       throw new Error('尚未設定 API URL。請在網址加上 ?apiUrl=你的GAS_exec網址');
     }
 
-    const httpMethod = method || 'POST';
-    const urlObj = new URL(GAS_API_URL);
-    urlObj.searchParams.set('api', '1');
-    urlObj.searchParams.set('action', action);
+    const httpMethod = method || 'GET';
 
-    let response;
+    // GitHub Pages 對 script.google.com fetch 容易遇到 CORS，改走 JSONP
     if (httpMethod === 'GET') {
-      if (payload && Object.keys(payload).length > 0) {
-        urlObj.searchParams.set('payload', JSON.stringify(payload));
-      }
-      response = await fetch(urlObj.toString(), { method: 'GET' });
-    } else {
-      // 使用 form-urlencoded 避免跨網域 JSON 預檢請求造成 Failed to fetch
-      const bodyParams = new URLSearchParams();
-      bodyParams.set('payload', JSON.stringify(payload || {}));
-      response = await fetch(urlObj.toString(), {
-        method: 'POST',
-        body: bodyParams.toString()
+      return new Promise((resolve, reject) => {
+        const cbName = '__gas_cb_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+        const urlObj = new URL(GAS_API_URL);
+        urlObj.searchParams.set('api', '1');
+        urlObj.searchParams.set('action', action);
+        urlObj.searchParams.set('callback', cbName);
+        if (payload && Object.keys(payload).length > 0) {
+          urlObj.searchParams.set('payload', JSON.stringify(payload));
+        }
+
+        const script = document.createElement('script');
+        let done = false;
+
+        function cleanup() {
+          if (script.parentNode) script.parentNode.removeChild(script);
+          try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
+        }
+
+        const timer = setTimeout(() => {
+          if (done) return;
+          done = true;
+          cleanup();
+          reject(new Error('API 請求逾時'));
+        }, 20000);
+
+        window[cbName] = function(resp) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          cleanup();
+          if (!resp || !resp.success) {
+            reject(new Error((resp && resp.message) || 'API 呼叫失敗'));
+            return;
+          }
+          resolve(resp.data);
+        };
+
+        script.onerror = function() {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          cleanup();
+          reject(new Error('API 腳本載入失敗'));
+        };
+
+        script.src = urlObj.toString();
+        document.head.appendChild(script);
       });
     }
 
-    if (!response.ok) {
-      throw new Error('API HTTP 錯誤: ' + response.status);
-    }
+    // POST 僅用於大型資料（例如圖片），採 no-cors fire-and-forget
+    const postUrl = new URL(GAS_API_URL);
+    postUrl.searchParams.set('api', '1');
+    postUrl.searchParams.set('action', action);
 
-    const json = await response.json();
-    if (!json.success) {
-      throw new Error(json.message || 'API 呼叫失敗');
-    }
-    return json.data;
+    const bodyParams = new URLSearchParams();
+    bodyParams.set('payload', JSON.stringify(payload || {}));
+    await fetch(postUrl.toString(), {
+      method: 'POST',
+      mode: 'no-cors',
+      body: bodyParams.toString()
+    });
+    return { success: true, message: 'submitted' };
   }
 
   function setMsg(type, html, autoHideMs) {
@@ -662,7 +699,7 @@
     if (formData.photoUrl) formData.photoUrl = '';
 
     try {
-      const res = await callApi('addDonationFast', { formData: formData }, 'POST');
+      const res = await callApi('addDonationFast', { formData: formData }, 'GET');
 
       if (res && res.success) {
         if (photoData) {
