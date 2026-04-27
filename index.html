@@ -391,10 +391,12 @@
       }
       response = await fetch(urlObj.toString(), { method: 'GET' });
     } else {
+      // 使用 form-urlencoded 避免跨網域 JSON 預檢請求造成 Failed to fetch
+      const bodyParams = new URLSearchParams();
+      bodyParams.set('payload', JSON.stringify(payload || {}));
       response = await fetch(urlObj.toString(), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload || {})
+        body: bodyParams.toString()
       });
     }
 
@@ -656,6 +658,8 @@
     
     const formData = Object.fromEntries(new FormData(form));
     const photoData = hiddenPhotoUrl.value;
+    // 圖片走第二階段背景同步，第一階段入庫不夾帶 base64 可降低請求失敗風險
+    if (formData.photoUrl) formData.photoUrl = '';
 
     try {
       const res = await callApi('addDonationFast', { formData: formData }, 'POST');
